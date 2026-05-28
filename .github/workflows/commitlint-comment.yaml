@@ -1,0 +1,108 @@
+name: Commit Lint Comment
+
+# Privileged follow-up to commitlint.yaml. Triggered by completion of the
+# unprivileged Commit Lint workflow; downloads the lint output artifact and
+# posts it as a PR comment. This split is the recommended pattern for safely
+# performing privileged operations in response to fork PRs:
+# https://securitylab.github.com/research/github-actions-preventing-pwn-requests/
+#
+# Security: this workflow does not check out PR code. The PR number is
+# resolved from the trusted workflow_run event payload (not the artifact),
+# and the commitlint text output is rendered inside a dynamically sized
+# code fence so embedded backticks cannot escape it.
+on:
+  workflow_run:
+    workflows: ["Commit Lint"]
+    types:
+      - completed
+
+permissions:
+  contents: read
+  pull-requests: write
+  actions: read
+
+jobs:
+  comment:
+    name: Comment on PR
+    if: >
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download lint artifact
+        id: download
+        uses: actions/download-artifact@v4
+        with:
+          name: commitlint-failure
+          path: lint-artifact
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Skip if no artifact
+        if: steps.download.outcome != 'success'
+        run: |
+          echo "No commitlint-failure artifact uploaded by the Commit Lint run; nothing to comment."
+
+      - name: Resolve PR number from workflow_run
+        if: steps.download.outcome == 'success'
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          # Derive PR number from trusted GitHub event data, not the artifact.
+          # The artifact is produced by an unprivileged pull_request workflow
+          # whose workflow file PR authors control on fork PRs, so any value
+          # they write into the artifact could be used to spoof comments onto
+          # a different PR. head_sha on the workflow_run event is GitHub-set
+          # and trustworthy.
+          pr=$(gh api "repos/$REPO/commits/$HEAD_SHA/pulls" \
+                 --jq '.[] | select(.state=="open") | .number' | head -n1)
+          if ! [[ "$pr" =~ ^[0-9]+$ ]]; then
+            echo "No open PR found for head SHA $HEAD_SHA; nothing to comment."
+            exit 0
+          fi
+          echo "pr_number=$pr" >> "$GITHUB_OUTPUT"
+
+      - name: Post comment
+        if: steps.download.outcome == 'success' && steps.pr.outputs.pr_number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          # The artifact contents are untrusted PR-author-controlled commit
+          # text. Pick a code-fence length that is at least one backtick
+          # longer than the longest backtick run in the file, so the author
+          # cannot escape the fence by embedding ``` in a commit message.
+          max_ticks=$(grep -oE '`+' lint-artifact/commitlint-output.txt 2>/dev/null \
+                        | awk '{ if (length > m) m = length } END { print m+0 }')
+          fence_len=$((max_ticks + 1))
+          [ "$fence_len" -lt 3 ] && fence_len=3
+          fence=$(printf '`%.0s' $(seq 1 "$fence_len"))
+          {
+            echo "## Commit message lint failed"
+            echo ""
+            echo "One or more commit messages don't follow the [Conventional Commits](https://www.conventionalcommits.org) format required by this project."
+            echo ""
+            echo "<details><summary>commitlint output</summary>"
+            echo ""
+            echo "$fence"
+            cat lint-artifact/commitlint-output.txt
+            echo "$fence"
+            echo ""
+            echo "</details>"
+            echo ""
+            echo "**Required format:** \`<type>: <description>\` (max 120 chars for the header)"
+            echo ""
+            echo "**Allowed types:** \`feat\`, \`fix\`, \`docs\`, \`example\`, \`examples\`, \`chore\`, \`refactor\`, \`perf\`, \`test\`, \`ci\`, \`revert\`"
+            echo ""
+            echo "To fix the most recent commit: \`git commit --amend\`"
+            echo ""
+            echo "To reword older commits: \`git rebase -i origin/main\`"
+          } > comment.md
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file comment.md
