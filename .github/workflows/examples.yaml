@@ -294,6 +294,7 @@ jobs:
   #   image        - build the app image (its Dockerfile COPYs the local adapter
   #                  image built below) and run it with PORT=8000.
   #   zip-fasthtml - run `python app/main.py` (FastHTML's serve() binds 8000).
+  #   zip-uvicorn  - run uvicorn directly (the zip's run.sh uses uvicorn).
   # AWS_REGION is set so boto3 / AnthropicBedrock clients construct without real
   # creds; the verified routes only render UI and never call Bedrock.
   test-stream:
@@ -305,6 +306,8 @@ jobs:
         example:
           - { name: fasthtml-response-streaming, kind: image, path: /, expect_body: "Serverless Bedtime" }
           - { name: fasthtml-response-streaming-zip, kind: zip-fasthtml, path: /, expect_body: "Click to stream" }
+          - { name: fastapi-response-streaming, kind: image, path: /demo/, expect_body: "Serverless Bedtime" }
+          - { name: fastapi-response-streaming-zip, kind: zip-uvicorn, path: /, expect_body: "streaming from Lambda" }
     steps:
       - uses: actions/checkout@v4
 
@@ -347,6 +350,11 @@ jobs:
             zip-fasthtml)
               pip install -r app/requirements.txt
               PORT=8000 nohup python app/main.py > /tmp/app.log 2>&1 &
+              echo "APP_PID=$!" >> $GITHUB_ENV
+              ;;
+            zip-uvicorn)
+              pip install -r app/requirements.txt
+              ( cd app && PORT=8000 exec python -m uvicorn --port 8000 main:app ) > /tmp/app.log 2>&1 &
               echo "APP_PID=$!" >> $GITHUB_ENV
               ;;
             *)
