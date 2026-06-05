@@ -170,12 +170,12 @@ jobs:
         if: always()
         run: kill $SAM_PID 2>/dev/null || true
 
-  # Zip-based examples verified with local layer. Each matrix entry asserts an
-  # exact status (and optional body substring) via verify-http.sh.
-  # `port` is the app's listening port, passed through to the adapter via the
-  # PORT parameter; it must differ from SAM's RIE port (8080).
-  # Excluded: aspnet-*-zip (hardcode port 8080),
-  # bun/nginx/php-zip (need third-party layers), arm64 examples (javalin, rust-*),
+  # Zip-based examples verified with `sam local start-api` against the locally
+  # built adapter layer.
+  # `port` is the app's listening port, passed to the adapter via PORT (it must
+  # differ from SAM's RIE port, 8080).
+  # Excluded: aspnet-*-zip (hardcode port 8080), bun/nginx/php-zip (need
+  # third-party layers), rust-*-zip (arm64 and hardcode 8080),
   # nextjs-zip (Makefile produces a zip artifact incompatible with sam local).
   test-zip:
     needs: [build-layer]
@@ -191,6 +191,7 @@ jobs:
           - { name: flask-zip, path: /, expect_body: "message", port: "8000" }
           - { name: gin-zip, path: /, expect_body: "message", port: "8000" }
           - { name: go-http-zip, path: /, expect_body: "Hello, Website!", port: "3000" }
+          - { name: javalin-zip, path: /v1/, expect_body: "Hello, world!", port: "8081" }
           - { name: remix-zip, path: /, expect_body: "Welcome to", port: "8000" }
           - { name: springboot-zip, path: /v1/, expect_body: "Hello, world!", port: "8000" }
     steps:
@@ -200,15 +201,22 @@ jobs:
         with:
           python-version: "3.13"
 
-      - uses: aws-actions/setup-sam@v2
+      # javalin-zip builds with Maven; set up a JDK explicitly.
+      - uses: actions/setup-java@v5
+        if: matrix.example.name == 'javalin-zip'
         with:
-          use-installer: true
-          token: ${{ secrets.GITHUB_TOKEN }}
+          distribution: temurin
+          java-version: "17"
 
       - uses: denoland/setup-deno@v2
         if: matrix.example.name == 'deno-zip'
         with:
           deno-version: v2.x
+
+      - uses: aws-actions/setup-sam@v2
+        with:
+          use-installer: true
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: actions/download-artifact@v4
         with:

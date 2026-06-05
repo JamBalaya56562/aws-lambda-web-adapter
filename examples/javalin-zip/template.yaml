@@ -17,15 +17,11 @@ Resources:
       Handler: run.sh
       CodeUri: app/
       Runtime: java17
-      Architectures: 
-        - arm64
-#        - x86_64
+      Architectures:
+        - x86_64
       AutoPublishAlias: live
-######################################
-#                                    #
-# SnapStart not supported with Arm64 #
-#                                    #
-######################################
+      # SnapStart works on x86_64, but is left off here because it is
+      # incompatible with `sam local start-api` (see README).
 #      SnapStart:
 #        ApplyOn: PublishedVersions
       Environment:
@@ -38,8 +34,7 @@ Resources:
           AWS_LWA_READINESS_CHECK_PORT: 8081
           AWS_LAMBDA_EXEC_WRAPPER: /opt/bootstrap
       Layers:
-        - !Sub arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerArm64:28
-#        - !Sub arn:aws:lambda:${AWS::Region}:753240598076:layer:LambdaAdapterLayerX86:20
+        - !Sub arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerX86:28
       Events:
         Root:
           Type: HttpApi

@@ -6,11 +6,11 @@ A basic pet store application written with the [Javalin 6](https://javalin.io) f
 This example application is functionally identical to the springboot-zip, except it is using the Javalin framework.  The Spring Boot Zip [template.yaml](../springboot-zip/template.yaml) can be used with this application as well.  
 
 ## Architecture
-*At the time of writing this example,* using `sam local start-api` with the x86 architecture and LambdaAdapterLayerX86 would not work properly on a Mac with Apple Silicon (M1/M2).
+This example uses the x86_64 architecture and LambdaAdapterLayerX86, consistent with the other zip examples.
 
-For that reason, this example uses the Arm64 architecture and LambdaAdapterLayerArm64.  This configuruation worked flawlessly on a 2022 MBP with Apple silicon.
+*Historically* this example used Arm64. At the time it was written, `sam local start-api` with the x86 architecture would not work properly on a Mac with Apple Silicon (M1/M2), because x86 containers ran under emulation. On a native x86_64 host (including CI) it works fine, so the example now ships as x86_64.
 
-Using the above mentioned springboot-zip example's template.yaml file works perfectly for everything, except `sam local start-api`.  Using that template.yaml file has the additional benefit of [SnapStart](https://docs.aws.amazon.com/lambda/latest/dg/snapstart.html) support.  SnapStart is not available for Arm64 at the time this example was written.
+[SnapStart](https://docs.aws.amazon.com/lambda/latest/dg/snapstart.html) (as springboot-zip uses) is supported on x86_64, but it is incompatible with `sam local start-api`, so it is left off here.
 
 Please note that using `sam local start-api` is not required for local development.  A developer could simply run the application directly through their preferred IDE/debugger or any other java (version 17+) runtime.
 
@@ -35,7 +35,7 @@ In the configuration we have to specify the AWS Lambda adapter as a layer and co
       CodeUri: app/
       Runtime: java17
       Architectures:
-        - arm64
+        - x86_64
       AutoPublishAlias: live
       Environment:
         Variables:
@@ -44,7 +44,7 @@ In the configuration we have to specify the AWS Lambda adapter as a layer and co
           REMOVE_BASE_PATH: /v1
           AWS_LAMBDA_EXEC_WRAPPER: /opt/bootstrap
       Layers:
-        - !Sub arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerArm64:28
+        - !Sub arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerX86:28
 ```
 
 ### Remove the base path
