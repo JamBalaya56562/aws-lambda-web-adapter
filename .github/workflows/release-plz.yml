@@ -37,11 +37,74 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - name: Run release-plz (release-pr)
+        id: release-plz
         uses: release-plz/action@v0.5
         with:
           command: release-pr
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+
+      # Fold the version-string updates (Docker image tag + predicted Lambda
+      # layer version) into the same commit release-plz just pushed, so the
+      # Release PR bumps Cargo.toml, the CHANGELOG, AND the docs/examples in one
+      # commit. The layer version is predicted as (current + 1): the SAM layer's
+      # Description embeds the crate version, so every release publishes exactly
+      # one new immutable layer version. release.yaml verifies the prediction
+      # after deploy and self-heals if it was ever wrong.
+      # Runs on PR create AND update (`pr` is populated for both; `prs_created`
+      # is only true on create).
+      - name: Inject version-string updates into the Release PR commit
+        if: steps.release-plz.outputs.pr != ''
+        env:
+          TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_JSON: ${{ steps.release-plz.outputs.pr }}
+        run: |
+          set -euo pipefail
+          BRANCH="$(jq -r '.head_branch' <<< "$PR_JSON")"
+          VERSION="$(jq -r '.releases[0].version' <<< "$PR_JSON")"
+          if [ -z "$BRANCH" ] || [ "$BRANCH" = null ] || [ -z "$VERSION" ] || [ "$VERSION" = null ]; then
+            echo "No pending release PR (no head_branch/version); skipping."
+            exit 0
+          fi
+          echo "Release PR branch=$BRANCH version=$VERSION"
+
+          # release-plz leaves the runner checkout on main; fetch + check out its branch.
+          git fetch --force origin "$BRANCH":"refs/remotes/origin/$BRANCH"
+          git checkout -B "$BRANCH" "refs/remotes/origin/$BRANCH"
+
+          # Predict next layer version = current repo value + 1. Anchor on the prod
+          # account (753240598075) so the commented obsolete ARN (…598076) is excluded.
+          # More than one distinct value means drift -> fail loudly.
+          mapfile -t cur < <(
+            grep -rhoE '753240598075:layer:LambdaAdapterLayer(X86|Arm64):[0-9]+' . \
+              --include='*.md' --include='*.yaml' --include='*.yml' | grep -oE '[0-9]+$' | sort -u
+          )
+          if [ "${#cur[@]}" -ne 1 ]; then
+            echo "::error::Lambda layer version drift; expected one value, found: ${cur[*]:-<none>}"
+            exit 1
+          fi
+          NEXT=$(( cur[0] + 1 ))
+          echo "current layer=${cur[0]} predicted next=$NEXT"
+
+          scripts/update-versions.sh "$VERSION" "$NEXT"
+          if git diff --quiet; then
+            echo "Docs already up to date; leaving release-plz commit untouched."
+            exit 0
+          fi
+
+          # Amend into release-plz's single commit, preserving the bot identity.
+          AN="$(git log -1 --format='%an')"
+          AE="$(git log -1 --format='%ae')"
+          git config user.name "$AN"
+          git config user.email "$AE"
+          git add -A
+          GIT_COMMITTER_NAME="$AN" GIT_COMMITTER_EMAIL="$AE" \
+            git commit --amend --no-edit --reset-author
+
+          # Checkout used persist-credentials:false, so authenticate the push explicitly.
+          git push --force \
+            "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "HEAD:${BRANCH}"
 
   release-plz-release:
     name: Release-plz release

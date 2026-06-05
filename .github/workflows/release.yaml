@@ -757,3 +757,107 @@ jobs:
               public.ecr.aws/awsguru/aws-lambda-adapter:${CARGO_PKG_VERSION}-x86_64 \
               public.ecr.aws/awsguru/aws-lambda-adapter:${CARGO_PKG_VERSION}-aarch64
           docker manifest push public.ecr.aws/awsguru/aws-lambda-adapter:${CARGO_PKG_VERSION}
+
+  # Safety net for the predicted Lambda layer version that the release-plz PR
+  # baked into the docs/examples. The prediction (previous + 1) is reliable
+  # because the SAM layer's Description embeds the crate version, so every
+  # release publishes exactly one new immutable layer version. This job reads
+  # the ACTUAL published version and, if the prediction was ever wrong, opens a
+  # self-healing PR to correct the docs.
+  #
+  # Requires the prod pipeline role (account 753240598075, where the public
+  # layer ARNs live) to allow `lambda:ListLayerVersions`. If that permission is
+  # not yet granted, this job will fail at the read step -- the prediction in
+  # release-plz.yml still stands on its own.
+  verify-layer-versions:
+    needs: [deploy-prod, publish-to-public-ecr]
+    runs-on: ubuntu-24.04
+    environment: prod
+    permissions:
+      id-token: write
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Assume the github runner role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.PROD_ECR_REGION }}
+          role-to-assume: ${{ env.GITHUB_RUNNER_ROLE }}
+
+      # us-east-1 prod pipeline role from prod.json -> account 753240598075,
+      # the account whose layer ARNs appear in the public docs/examples.
+      - name: Assume the prod pipeline user role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-skip-session-tagging: true
+          aws-region: ${{ env.PROD_ECR_REGION }}
+          role-to-assume: arn:aws:iam::753240598075:role/aws-sam-cli-managed-prod-pipe-PipelineExecutionRole-7Hangwn17nEz
+
+      - name: Compare published layer version to the repo and self-heal if needed
+        id: cmp
+        run: |
+          set -euo pipefail
+          X86=$(aws lambda list-layer-versions --layer-name LambdaAdapterLayerX86 \
+                  --region us-east-1 --query 'LayerVersions[0].Version' --output text)
+          ARM=$(aws lambda list-layer-versions --layer-name LambdaAdapterLayerArm64 \
+                  --region us-east-1 --query 'LayerVersions[0].Version' --output text)
+          echo "published x86=$X86 arm64=$ARM"
+          if [ "$X86" != "$ARM" ]; then
+            echo "::error::x86 ($X86) and arm64 ($ARM) layer versions differ; docs use one integer"
+            exit 1
+          fi
+
+          mapfile -t repo < <(
+            grep -rhoE '753240598075:layer:LambdaAdapterLayer(X86|Arm64):[0-9]+' . \
+              --include='*.md' --include='*.yaml' --include='*.yml' | grep -oE '[0-9]+$' | sort -u
+          )
+          if [ "${#repo[@]}" -ne 1 ]; then
+            echo "::error::repo layer version drift on main: ${repo[*]:-<none>}"
+            exit 1
+          fi
+          echo "repo layer=${repo[0]} published=$X86"
+
+          if [ "${repo[0]}" = "$X86" ]; then
+            echo "Prediction was correct; nothing to do."
+            echo "needs_fix=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          VERSION=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          scripts/update-versions.sh "$VERSION" "$X86"
+          echo "needs_fix=true"      >> "$GITHUB_OUTPUT"
+          echo "layer_version=$X86"  >> "$GITHUB_OUTPUT"
+
+      - name: Generate a GitHub App token
+        if: steps.cmp.outputs.needs_fix == 'true'
+        uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          app-id: ${{ secrets.RELEASE_PLZ_APP_ID }}
+          private-key: ${{ secrets.RELEASE_PLZ_APP_PRIVATE_KEY }}
+
+      # App token so the correction PR triggers CI (a PR opened with the default
+      # GITHUB_TOKEN would not).
+      - name: Open self-healing correction PR
+        if: steps.cmp.outputs.needs_fix == 'true'
+        uses: peter-evans/create-pull-request@v8
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          base: main
+          branch: fix/layer-version-${{ steps.cmp.outputs.layer_version }}
+          delete-branch: true
+          commit-message: "fix: correct Lambda layer version to ${{ steps.cmp.outputs.layer_version }}"
+          title: "fix: correct Lambda layer version to ${{ steps.cmp.outputs.layer_version }}"
+          body: |
+            Automated correction: the published Lambda layer version is
+            `${{ steps.cmp.outputs.layer_version }}`, but the docs/examples on
+            `main` recorded a different value (the predicted version was wrong).
+            Updating the version strings to match what was actually published.
