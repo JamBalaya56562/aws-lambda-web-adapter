@@ -79,7 +79,7 @@ jobs:
   # Docker-based examples verified with sam local start-api. Each matrix entry
   # asserts an exact status (and optional body substring) via verify-http.sh,
   # not just liveness.
-  # Excluded: nginx, php, flask, aspnet-mvc (web app hardcodes port 8080
+  # Excluded: nginx, php, aspnet-mvc (web app hardcodes port 8080
   # which conflicts with SAM's Lambda Runtime Interface Emulator).
   test-image:
     needs: [build-layer]
@@ -92,6 +92,7 @@ jobs:
           - { name: fastapi, path: /, expect_body: "message" }
           - { name: fastapi-background-tasks, path: /, expect_body: "message" }
           - { name: fasthtml, path: /, expect_body: "Hello World" }
+          - { name: flask, path: /, expect_body: "hello world" }
           - { name: gin, path: /, expect_body: "message" }
           - { name: nextjs, path: /, expect_body: "Next.js Logo" }
           - { name: remix, path: /, expect_body: "Welcome to" }
