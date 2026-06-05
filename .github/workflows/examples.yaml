@@ -295,6 +295,7 @@ jobs:
   #                  image built below) and run it with PORT=8000.
   #   zip-fasthtml - run `python app/main.py` (FastHTML's serve() binds 8000).
   #   zip-uvicorn  - run uvicorn directly (the zip's run.sh uses uvicorn).
+  #   zip-java     - mvnw package, then run the Spring Boot jar (SERVER_PORT=8000).
   # AWS_REGION is set so boto3 / AnthropicBedrock clients construct without real
   # creds; the verified routes only render UI and never call Bedrock.
   test-stream:
@@ -308,12 +309,19 @@ jobs:
           - { name: fasthtml-response-streaming-zip, kind: zip-fasthtml, path: /, expect_body: "Click to stream" }
           - { name: fastapi-response-streaming, kind: image, path: /demo/, expect_body: "Serverless Bedtime" }
           - { name: fastapi-response-streaming-zip, kind: zip-uvicorn, path: /, expect_body: "streaming from Lambda" }
+          - { name: springboot-response-streaming-zip, kind: zip-java, path: /, expect_body: "Hello, world!" }
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v4
         with:
           python-version: "3.12"
+
+      - uses: actions/setup-java@v5
+        if: matrix.example.kind == 'zip-java'
+        with:
+          distribution: temurin
+          java-version: "17"
 
       - uses: actions/download-artifact@v4
         with:
@@ -355,6 +363,15 @@ jobs:
             zip-uvicorn)
               pip install -r app/requirements.txt
               ( cd app && PORT=8000 exec python -m uvicorn --port 8000 main:app ) > /tmp/app.log 2>&1 &
+              echo "APP_PID=$!" >> $GITHUB_ENV
+              ;;
+            zip-java)
+              # Build synchronously (Maven downloads can exceed the 90s verify
+              # window), then run the Spring Boot jar. Use the runner's mvn
+              # (the example ships mvnw without its .mvn/wrapper jar). The app
+              # reads SERVER_PORT via Spring's relaxed binding (it ignores PORT).
+              ( cd app && mvn -q -B -DskipTests package )
+              ( cd app && SERVER_PORT=8000 exec java -jar target/*.jar ) > /tmp/app.log 2>&1 &
               echo "APP_PID=$!" >> $GITHUB_ENV
               ;;
             *)
